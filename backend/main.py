@@ -27,6 +27,7 @@ DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant."
 class ChatRequest(BaseModel):
     session_id: str = Field(min_length=1, max_length=128)
     message: str = Field(min_length=1, max_length=4000)
+    system_prompt: str | None = None
 
     @field_validator("message", mode="before")
     @classmethod
@@ -45,6 +46,14 @@ class ChatRequest(BaseModel):
 async def lifespan(app: FastAPI):
     path = database_path(os.getenv("DATABASE_URL", "sqlite:///./app.db"))
     initialize_database(path)
+    with connect(path) as connection, connection:
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS session_prompts (
+                session_id TEXT PRIMARY KEY,
+                system_prompt TEXT NOT NULL
+            )
+        """)
+
     app.state.database_path = path
     app.state.gateway, app.state.keys_configured = create_gateway()
     app.state.response_cache = create_response_cache()
@@ -127,7 +136,20 @@ def chat(
         raise HTTPException(503, detail="all providers unavailable")
 
     history = read_history(request.session_id)
-    messages = [{"role": "system", "content": DEFAULT_SYSTEM_PROMPT}]
+
+    system_prompt = request.system_prompt
+    if system_prompt is None:
+        try:
+            with connect(app.state.database_path) as connection:
+                row = connection.execute(
+                    "SELECT system_prompt FROM session_prompts WHERE session_id = ?",
+                    (request.session_id,),
+                ).fetchone()
+        except sqlite3.Error:
+            raise HTTPException(503, detail="database unavailable") from None
+        system_prompt = row[0] if row is not None else DEFAULT_SYSTEM_PROMPT
+
+    messages = [{"role": "system", "content": system_prompt}]
     messages.extend(
         {"role": item["role"], "content": item["content"]}
         for item in history
@@ -167,6 +189,17 @@ def chat(
     created_at = datetime.now(timezone.utc).isoformat()
     try:
         with connect(app.state.database_path) as connection, connection:
+            if request.system_prompt is not None:
+                connection.execute(
+                    """
+                    INSERT INTO session_prompts (session_id, system_prompt)
+                    VALUES (?, ?)
+                    ON CONFLICT(session_id)
+                    DO UPDATE SET system_prompt = excluded.system_prompt
+                    """,
+                    (request.session_id, request.system_prompt),
+                )
+
             connection.executemany(
                 """
                 INSERT INTO messages (session_id, role, content, metadata, created_at)
