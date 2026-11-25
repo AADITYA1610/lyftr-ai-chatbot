@@ -1,0 +1,28 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      LLM_API_KEYS: "${LLM_API_KEYS:?Add your two Groq keys to .env}"
+      LLM_MODEL: "${LLM_MODEL:?Set LLM_MODEL in .env}"
+      DATABASE_URL: "sqlite:////data/app.db"
+      ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:-http://localhost:3000}"
+      ENABLE_FAILURE_SIMULATION: "${ENABLE_FAILURE_SIMULATION:-false}"
+    volumes:
+      - chat_data:/data
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_BASE_URL: "${VITE_API_BASE_URL:-http://localhost:8000}"
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+
+volumes:
+  chat_data:
